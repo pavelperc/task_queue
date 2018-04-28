@@ -1,4 +1,6 @@
 import java.util.*
+import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * Created by pavel on 25.04.2018.
@@ -20,7 +22,7 @@ class Task(
     val id = counter++
     
     fun work() {
-        println("task $id started working.")
+        println("task $id started working for $workTime ms. (sleeping is work!)")
         Thread.sleep(workTime.toLong())
         println("task $id finished working.")
         
@@ -30,7 +32,12 @@ class Task(
 }
 
 
-/** This is a container with tasks. It extends thread and runs tasks in the priority order.*/
+/**
+ * This is a container for tasks. It extends thread and runs tasks in some order.
+ *
+ * The task becomes deleted from inner [queue] right before its invocation.
+ * But [leftSpace] restores just after the work is done.
+ * */
 class TaskQueue(
     /** Maximal estimated time in milliseconds for all the tasks in this queue.*/
     val timeCapacity: Int = 5000
@@ -39,6 +46,7 @@ class TaskQueue(
     companion object {
         private var counter = 0
     }
+    
     val id = counter++
     
     
@@ -47,7 +55,8 @@ class TaskQueue(
     }
     
     
-    private val queue = PriorityQueue<Task> { task1, task2 ->
+    /** Blocking queue with tasks, sorted by priority and then by waiting time.*/
+    private val queue = PriorityBlockingQueue<Task>(11) { task1, task2 ->
         // firstly compare priorities
         var ans = task1.priority.compareTo(task2.priority)
         // secondly compare working time
@@ -58,44 +67,86 @@ class TaskQueue(
     }
     
     
-    /** The sum of all [Task.workTime] among all tasks in [queue]*/
-    var filledSpace = 0
+    /** Equals [timeCapacity] minus total of all [Task.workTime] among all tasks in [queue]*/
+    @Volatile
+    var leftSpace = timeCapacity
         private set
     
-    fun canAddTask(task: Task) = filledSpace + task.workTime <= timeCapacity
+    
+    @Synchronized
+    fun canAddTask(task: Task) = leftSpace >= task.workTime
     
     
+    /** @throws Exception when [task] can not be added.*/
+    @Synchronized
     fun addTask(task: Task) {
         if (canAddTask(task)) {
             queue.add(task)
-            filledSpace += task.workTime
+            synchronized(leftSpace) {
+                leftSpace -= task.workTime
+            }
             println("successfully pushed task ${task.id} to queue $id")
         } else {
-            throw Exception("Tried to add task ${task.id}, which doesn't fit to queue $id")
+            throw Exception("Tried to add task ${task.id}, which doesn't fit to queue: $this")
         }
     }
     
+    
+    /** Task which is working at the moment*/
+    @Volatile
+    private var workingTask: Task? = null
+    
+    
+    /** Updates [workingTask] and [leftSpace]*/
+    @Synchronized
+    private fun runTask(task: Task) {
+        workingTask = task
+        task.work()
+        // return space back AFTER THE WORK
+        synchronized(leftSpace) { leftSpace += task.workTime }
+        workingTask = null
+    }
+    
+    /** Lock for avoiding [InterruptedException] while a task is working.*/
+    private val canInterrupt = ReentrantLock()
+    
     override fun run() {
-        while (true) {// active waiting
-            // trying to get the shortest task with the highest priority
-            val task = queue.peek()
+        try {
+            while (true) {
+                // trying to get the shortest task with the highest priority
+                // blocks process while queue is empty
+                val task = queue.take()
+                
+                canInterrupt.lock()
+                runTask(task)
+                canInterrupt.unlock()
+                
+            }
+        } catch (e: InterruptedException) {
+            // launch left processes from the queue
             
-            Thread.sleep(100)
-            
-            if (task != null) {
-                task.work()
-                filledSpace -= task.workTime
-                queue.remove()
+            while (!queue.isEmpty()) {
+                val task = queue.poll()
+                        ?: throw Exception("tried to get element from empty queue after interruption call")
+                runTask(task)
             }
         }
     }
     
-    override fun toString(): String {
-        val taskIds = queue.map { task -> task.id }.joinToString(", ")
-        return "Queue $id: filled: ($filledSpace from $timeCapacity), tasks = [${queue.joinToString("; ")}]"
+    /** Overridden interruption waits until one current task finishes its work
+     * for throwing interruption between two working tasks or while the [queue] is waiting for elements*/
+    override fun interrupt() {
+        // wait until some task ends working
+        canInterrupt.lock()
+        super.interrupt()
     }
     
-    fun isEmpty() = queue.isEmpty()
+    override fun toString(): String {
+//        val taskIds = queue.map { task -> task.id }.joinToString(", ")
+        return "Queue $id: left $leftSpace from $timeCapacity, waiting tasks = [${queue.joinToString("; ")}], " +
+                "working task = ($workingTask)"
+    }
+    
 }
 
 class QueueHandler(val queuesNumber: Int) {
@@ -106,16 +157,19 @@ class QueueHandler(val queuesNumber: Int) {
         queues.forEach { it.start() }
     }
     
+    @Synchronized
     fun addTask(task: Task) {
         println("trying to push $task")
         println(this)
         println()
+        
         var bestQueue: TaskQueue?
-        do {
+        
+        do {// busy waiting
             bestQueue = queues
                 .filter { it.canAddTask(task) }// take only queues where we can put the task
-                .minBy { it.timeCapacity - it.filledSpace }// choose one with the least left space
-        } while (bestQueue == null)// active waiting
+                .minBy { it.leftSpace }// choose one with the least left space
+        } while (bestQueue == null)// busy waiting while there are no available queues
         
         bestQueue.addTask(task)
         println()
@@ -126,11 +180,9 @@ class QueueHandler(val queuesNumber: Int) {
     }
     
     /** Waits until all queues become empty*/
-    fun waitAllTasks() {
-        while (!queues.all { it.isEmpty() }) {
-//            Thread.sleep(100)
-//            println("waiting queues: $this")
-        }
+    fun shutdownAllTasks() {
+        println("shutdownAllTasks called")
+        queues.forEach { it.interrupt(); it.join() }
     }
 }
 
@@ -151,6 +203,7 @@ fun main(args: Array<String>) {
         queueHandler.addTask(task)
     }
     
-    queueHandler.waitAllTasks()
+    // Waits until all tasks finish their work
+    queueHandler.shutdownAllTasks()
     
 }
