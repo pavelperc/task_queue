@@ -10,7 +10,7 @@ import java.util.concurrent.locks.ReentrantLock
 val rnd = Random()
 
 open class Task(
-    /** Estimated working time in microseconds*/
+    /** Estimated working time in milliseconds*/
     val workTime: Int = rnd.nextInt(5000),
     /** The lowest value means the highest priority*/
     val priority: Int = rnd.nextInt(3) + 1,
@@ -43,7 +43,7 @@ open class Task(
  * But [leftSpace] restores just after the work is done.
  * */
 open class TaskQueue(
-    /** Maximal estimated time in milliseconds for all the tasks in this queue.*/
+    /** Maximal estimated time in milliseconds for all tasks in this queue.*/
     val timeCapacity: Int,
     val id: Int = counter
 ) : Thread() {
@@ -79,7 +79,8 @@ open class TaskQueue(
     fun canAddTask(task: Task) = (leftSpace >= task.workTime)
     
     
-    /** @throws IllegalStateException when [task] can not be added.*/
+    /** Adds task to this queue.
+     * @throws IllegalStateException when [task] can not be added.*/
     @Synchronized
     fun addTask(task: Task) {
         if (canAddTask(task)) {
@@ -100,15 +101,15 @@ open class TaskQueue(
     var workingTask: Task? = null
         private set
     
-    /** Updates [workingTask] and [leftSpace]*/
+    /** Runs [task] and updates [workingTask] and [leftSpace]*/
     private fun runTask(task: Task) {
         task.work()
-        // return space back AFTER THE WORK
+        // return space back to queue AFTER WORK
         synchronized(leftSpace) { leftSpace += task.workTime }
         workingTask = null
     }
     
-    /** Lock for avoiding [InterruptedException] while a task is working.*/
+    /** Lock for avoiding [InterruptedException] while certain task is working.*/
     private val canInterrupt = ReentrantLock()
     
     override fun run() {
@@ -118,15 +119,14 @@ open class TaskQueue(
                 // blocks process while queue is empty
                 workingTask = queue.take()
                 
-//                println("between take and runTask with $workingTask")
-                
+                // block calling interruption
                 canInterrupt.lockInterruptibly()
                 runTask(workingTask!!)
                 canInterrupt.unlock()
                 
             }
         } catch (e: InterruptedException) {
-            // launch left processes from the queue
+            // launch left tasks from the queue
             
 //            println("Caught InterruptedException in $this")
             
@@ -143,7 +143,8 @@ open class TaskQueue(
     }
     
     /** Overridden interruption waits until one current task finishes its work.
-     * This is done for throwing interruption between two working tasks or while the [queue] is waiting for elements.*/
+     * This is done for throwing interruption only  between two working tasks
+     * or while the [queue] is waiting for elements.*/
     override fun interrupt() {
         // wait until workingTask ends working and unblocks the lock
         canInterrupt.lock()
@@ -159,6 +160,7 @@ open class TaskQueue(
     
 }
 
+/** Keeps queues and chooses in which queue new task should be added.*/
 class QueueHandler(private val queues: List<TaskQueue>) {
     
     constructor(queuesNumber: Int, timeCapacity: Int) : this(List(queuesNumber) { TaskQueue(timeCapacity) })

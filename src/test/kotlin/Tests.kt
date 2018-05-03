@@ -4,7 +4,6 @@ import io.kotlintest.matchers.should
 import io.kotlintest.matchers.shouldBe
 import io.kotlintest.matchers.shouldThrow
 import io.kotlintest.specs.StringSpec
-import sun.invoke.empty.Empty
 import java.util.concurrent.TimeUnit
 
 /**
@@ -12,7 +11,7 @@ import java.util.concurrent.TimeUnit
  */
 
 
-/** After working it adds its [id] to [idList]*/
+/** After work it adds its [id] to the end of [idList]*/
 class TestTask(workTime: Int, priority: Int, id: Int, private val idList: MutableList<Int>) :
     Task(workTime, priority, id) {
     
@@ -65,7 +64,7 @@ class PriorityTest : StringSpec() {
             queue.addTask(task1)
             
             queue.start()
-            queue.interrupt()// finishes all tasks
+            queue.interrupt()// finishes all tasks and don't wait another ones
             queue.join()
             
             
@@ -110,7 +109,7 @@ class FilledQueueTest : StringSpec() {
 }
 
 class TestQueue(timeCapacity: Int, id: Int) : TaskQueue(timeCapacity, id) {
-    /** @return set of working and waiting tasks in the queue.
+    /** Returns set of working and waiting tasks in the queue.
      * May be unstable because of [workingTask]*/
     val taskIds: Set<Int>
         get() {
@@ -172,6 +171,7 @@ class QueueHandlerTest : StringSpec() {
             
             handler.addTask(task3)
             queue2.taskIds shouldBe setOf(3)
+            
         }.config(timeout = Duration(1000, TimeUnit.MILLISECONDS))
     }
 }
